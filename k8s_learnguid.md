@@ -369,12 +369,136 @@ ConfigMap / Secret（設定・機密情報）
 
 ---
 
-## 次のステップ
+## 今後の学習ロードマップ
 
-- [ ] Ingress のデプロイ（L7ロードバランス）
-- [ ] PV, PVC のデプロイ（永続化ストレージ）
-- [ ] CI/CD（GitHub Actions + ArgoCD）
-- [ ] モニタリング（Prometheus + Grafana）
+### Phase 1: k8s基礎（完了）
+
+- [x] Pod のデプロイ
+- [x] Deployment のデプロイ
+- [x] Service のデプロイ（L4ロードバランス）
+- [x] オートヒーリング
+- [x] ConfigMap, Secret のデプロイ
+
+### Phase 2: k8s応用
+
+- [ ] **Step 7: Ingress のデプロイ（L7ロードバランス）**
+  - パスベースのルーティング（`/api` → API Pod、`/web` → Web Pod）
+  - ホストベースのルーティング
+  - マイクロサービスの疎結合を理解する重要なステップ
+
+- [ ] **Step 8: PV, PVC のデプロイ（永続化ストレージ）**
+  - PersistentVolume（PV）: 実際のストレージ
+  - PersistentVolumeClaim（PVC）: Podからのストレージ要求
+  - Podからのマウント
+
+### Phase 3: CI/CD
+
+- [ ] **Step 9: GitHub Actions でイメージビルド**
+  - mainにマージされたらdocker imageをビルド
+  - DockerHubにpush
+
+- [ ] **Step 10: ArgoCD でGitOps**
+  - ArgoCDがGitHubの変更を検知
+  - 自動でk8sクラスタを更新
+  - GitOpsの概念を理解
+
+### Phase 4: モニタリング
+
+- [ ] **Step 11: Prometheus + Grafana**
+  - node-exporterでメトリクス収集
+  - Prometheusでデータ保存
+  - Grafanaで可視化
+
+---
+
+## Q&A（学習中に出た質問と回答）
+
+### Q1: イメージとコンテナの違いは？
+
+**A:** 
+- **イメージ** = 設計図、テンプレート（読み取り専用）。クッキーの「型」のようなもの。
+- **コンテナ** = イメージから作られた実行中のプロセス。型から作られた「実際のクッキー」。
+
+同じイメージから複数のコンテナを作れる。イメージは変更されないが、コンテナ内部は変更可能（ただし一時的）。
+
+---
+
+### Q2: L4ロードバランスとL7ロードバランスの違いは？
+
+**A:**
+
+| 項目 | L4（Service） | L7（Ingress） |
+|------|---------------|---------------|
+| 動作レイヤー | トランスポート層 | アプリケーション層 |
+| 見るもの | IPアドレス、ポート番号 | HTTPパス、ホスト名、ヘッダー |
+| ルーティング | ポート番号ベース | パス/ホストベース |
+| 例 | `:30080` → nginx Pod | `/api` → API Pod, `/web` → Web Pod |
+
+L7の方がきめ細かいルーティングが可能。マイクロサービスアーキテクチャで重要。
+
+---
+
+### Q3: PVとPVCの違いは？
+
+**A:**
+- **PV（PersistentVolume）** = 管理者が用意する「実際のストレージ」。ディスクそのもの。
+- **PVC（PersistentVolumeClaim）** = 開発者が出す「ストレージの要求書」。「10GBのストレージが欲しい」という申請。
+
+分離する理由:
+- 開発者はインフラの詳細を知らなくていい
+- 管理者はストレージを一元管理できる
+- 環境（dev/prod）ごとに異なるストレージを割り当てられる
+
+---
+
+### Q4: なぜPodを直接使わずDeploymentを使う？
+
+**A:**
+Podは一時的な存在で、削除されたら復活しない。Deploymentを使うと：
+- 指定した数のPodを常に維持（オートヒーリング）
+- スケーリングが簡単（`kubectl scale`）
+- ローリングアップデートでダウンタイムなし
+
+本番環境では必ずDeploymentを使う。
+
+---
+
+### Q5: ConfigMapとSecretの違いは？
+
+**A:**
+- **ConfigMap** = 一般的な設定（環境名、ログレベルなど）
+- **Secret** = 機密情報（パスワード、APIキーなど）
+
+Secretはbase64エンコードされ、`kubectl describe`で値が表示されない。ただし、base64は暗号化ではないので、本番では追加のセキュリティ対策（Vault等）を検討。
+
+---
+
+### Q6: labelとselectorはなぜ必要？
+
+**A:**
+k8sは多数のリソースを管理するため、「どれとどれが関連しているか」を判断する仕組みが必要。
+
+```yaml
+# Podに付けるラベル
+labels:
+  app: nginx
+
+# Serviceが選ぶ条件
+selector:
+  app: nginx  # このラベルを持つPodに転送
+```
+
+これにより、Serviceは動的にPodを発見できる（Podが増減しても自動で対応）。
+
+---
+
+### Q7: minikubeとDocker Desktop内蔵のk8sどっちがいい？
+
+**A:**
+- **Docker Desktop内蔵k8s**: 手軽に始められる。間接的に触るだけなら十分。
+- **minikube**: より本番に近い環境。学習目的ならこちらがおすすめ。
+
+今回はminikubeを使用。kubectlも別途インストールが必要だが、本番環境でも同じコマンドが使えるメリットがある。
 
 ---
 
