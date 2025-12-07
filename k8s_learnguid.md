@@ -2,6 +2,8 @@
 
 このドキュメントは、Kubernetesの基礎を段階的に学習した記録です。
 
+---
+
 ## 環境構築
 
 ### 必要なツールのインストール
@@ -329,85 +331,363 @@ exit
 
 ---
 
-## ここまでのまとめ
+## Step 7: Ingress のデプロイ（L7ロードバランス）
 
-### 完了した内容
+### Ingressとは
 
-✅ Pod のデプロイ  
-✅ Deployment のデプロイ  
-✅ Service のデプロイ（L4ロードバランス）  
-✅ オートヒーリング  
-✅ ConfigMap, Secret のデプロイ
+L4（Service）との違い：
 
-### k8sの基本構造
+| 項目 | L4 (Service NodePort) | L7 (Ingress) |
+|------|----------------------|--------------|
+| 動作レイヤー | トランスポート層 | アプリケーション層 |
+| 見るもの | IPアドレス、ポート番号 | HTTPパス、ホスト名、ヘッダー |
+| ルーティング | ポート番号ベース | パス/ホストベース |
+| 例 | `:30080` → nginx Pod | `/api` → API Pod, `/web` → Web Pod |
+
+```
+【Serviceだけの構成】
+ブラウザ → :30080 → Service → Pod (nginx)
+ブラウザ → :30081 → Service → Pod (api)
+↑ ポートがどんどん増える...
+
+【Ingressを使った構成】
+ブラウザ → Ingress (:80)
+              ├─ /v1  → Service → Pod (app-v1)
+              └─ /v2  → Service → Pod (app-v2)
+↑ 1つの入り口でパスごとに振り分け！
+```
+
+### 7-1. Ingress Controllerの有効化
+
+```bash
+minikube addons enable ingress
+kubectl get pods -n ingress-nginx
+# ingress-nginx-controller-xxxxx が Running になるまで待つ
+```
+
+### 7-2. テスト用アプリを2つ作成
+
+#### app-v1.yaml
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-v1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: app-v1
+  template:
+    metadata:
+      labels:
+        app: app-v1
+    spec:
+      containers:
+      - name: app
+        image: hashicorp/http-echo
+        args:
+          - "-text=Hello from App V1!"
+        ports:
+        - containerPort: 5678
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-v1-service
+spec:
+  selector:
+    app: app-v1
+  ports:
+  - port: 80
+    targetPort: 5678
+```
+
+#### app-v2.yaml
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-v2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: app-v2
+  template:
+    metadata:
+      labels:
+        app: app-v2
+    spec:
+      containers:
+      - name: app
+        image: hashicorp/http-echo
+        args:
+          - "-text=Hello from App V2!"
+        ports:
+        - containerPort: 5678
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-v2-service
+spec:
+  selector:
+    app: app-v2
+  ports:
+  - port: 80
+    targetPort: 5678
+```
+
+```bash
+kubectl apply -f app-v1.yaml
+kubectl apply -f app-v2.yaml
+```
+
+### 7-3. Ingressを作成
+
+#### my-ingress.yaml
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: my-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+  - http:
+      paths:
+      - path: /v1
+        pathType: Prefix
+        backend:
+          service:
+            name: app-v1-service
+            port:
+              number: 80
+      - path: /v2
+        pathType: Prefix
+        backend:
+          service:
+            name: app-v2-service
+            port:
+              number: 80
+```
+
+```bash
+kubectl apply -f my-ingress.yaml
+kubectl get ingress
+```
+
+### 7-4. 動作確認
+
+```bash
+# 別ターミナルで実行（開いたままにする）
+minikube tunnel
+
+# 元のターミナルで確認
+curl http://127.0.0.1/v1  # → Hello from App V1!
+curl http://127.0.0.1/v2  # → Hello from App V2!
+```
+
+---
+
+## Step 8: PV / PVC のデプロイ（永続化ストレージ）
+
+### なぜ必要？
+
+Podは一時的な存在。消えたらデータも消える。
+
+```bash
+# 実験：PVCなしのPodでファイルを作成
+kubectl apply -f test-pod.yaml
+kubectl exec -it test-pod -- sh -c "echo 'hello' > /tmp/test.txt"
+kubectl exec -it test-pod -- cat /tmp/test.txt  # → hello
+
+# Podを消して再作成
+kubectl delete pod test-pod
+kubectl apply -f test-pod.yaml
+kubectl exec -it test-pod -- cat /tmp/test.txt  # → No such file or directory
+# → データが消えた！
+```
+
+### PV と PVC の関係
+
+```
+PV  = 駐車場（管理者が用意する実際のスペース）
+PVC = 駐車券（開発者が「車1台分ください」と申請）
+
+開発者はどこの駐車場かは気にしない。
+「1台分のスペースが欲しい」とだけ言えばOK。
+```
+
+### 8-1. テスト用Pod（PVCなし）
+
+#### test-pod.yaml
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-pod
+spec:
+  containers:
+  - name: nginx
+    image: nginx:latest
+```
+
+### 8-2. PersistentVolume を作成
+
+#### my-pv.yaml
+
+```yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: my-pv
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  hostPath:
+    path: /data/my-pv
+```
+
+### 8-3. PersistentVolumeClaim を作成
+
+#### my-pvc.yaml
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: my-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+```
+
+```bash
+kubectl apply -f my-pv.yaml
+kubectl apply -f my-pvc.yaml
+kubectl get pv
+kubectl get pvc  # STATUS が Bound になればOK
+```
+
+### 8-4. PVCをマウントしたPod
+
+#### test-pod-with-pvc.yaml
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-pod-pvc
+spec:
+  containers:
+  - name: nginx
+    image: nginx:latest
+    volumeMounts:
+    - name: my-storage
+      mountPath: /data
+  volumes:
+  - name: my-storage
+    persistentVolumeClaim:
+      claimName: my-pvc
+```
+
+### 8-5. 永続化の確認
+
+```bash
+kubectl apply -f test-pod-with-pvc.yaml
+
+# ファイルを作成
+kubectl exec -it test-pod-pvc -- sh -c "echo 'hello persistent!' > /data/test.txt"
+kubectl exec -it test-pod-pvc -- cat /data/test.txt  # → hello persistent!
+
+# Podを消して再作成
+kubectl delete pod test-pod-pvc
+kubectl apply -f test-pod-with-pvc.yaml
+
+# データが残っている！
+kubectl exec -it test-pod-pvc -- cat /data/test.txt  # → hello persistent!
+```
+
+---
+
+## 現在の構成図
 
 ```
 外部（ブラウザ）
   ↓
-Service（入り口・負荷分散）
+Ingress（/v1, /v2 でルーティング - L7）
   ↓
-Deployment（Pod管理者）
-  ├→ Pod1（コンテナ実行）
-  ├→ Pod2（コンテナ実行）
-  └→ Pod3（コンテナ実行）
-       ↑
-ConfigMap / Secret（設定・機密情報）
+Service（負荷分散 - L4）
+  ↓
+Deployment（Pod管理・オートヒーリング）
+  ↓
+Pod → コンテナ
+  ↑       ↑
+  |       ConfigMap / Secret（設定・機密情報）
+  |
+PVC → PV（永続ストレージ）
 ```
-
-### 重要な概念
-
-1. **ラベルとセレクター**
-   - ServiceがどのPodに転送するか判断する仕組み
-   - `labels` と `selector` が一致するものを選択
-
-2. **宣言的な管理**
-   - YAMLで「こうあるべき」を宣言
-   - k8sが自動で現状をその状態に保つ
-
-3. **設定とコードの分離**
-   - イメージには変更を加えず、ConfigMap/Secretで設定を変更できる
 
 ---
 
-## 今後の学習ロードマップ
+## 作成したYAMLファイル一覧
 
-### Phase 1: k8s基礎（完了）
+### Phase 1: k8s基礎
+| ファイル名 | 内容 |
+|-----------|------|
+| nginx-pod.yaml | 単体のPod |
+| nginx-service.yaml | NodePort Service |
+| nginx-deployment.yaml | Deployment（replicas: 3） |
+| app-configmap.yaml | ConfigMap |
+| app-secret.yaml | Secret |
+| app-deployment.yaml | ConfigMap/Secretを使うDeployment |
 
+### Phase 2: k8s応用
+| ファイル名 | 内容 |
+|-----------|------|
+| app-v1.yaml | テスト用アプリV1（Deployment + Service） |
+| app-v2.yaml | テスト用アプリV2（Deployment + Service） |
+| my-ingress.yaml | Ingress（パスベースルーティング） |
+| test-pod.yaml | テスト用Pod（PVCなし） |
+| my-pv.yaml | PersistentVolume |
+| my-pvc.yaml | PersistentVolumeClaim |
+| test-pod-with-pvc.yaml | PVCをマウントしたPod |
+
+---
+
+## 学習ロードマップ
+
+### Phase 1: k8s基礎 ✅ 完了
 - [x] Pod のデプロイ
 - [x] Deployment のデプロイ
 - [x] Service のデプロイ（L4ロードバランス）
 - [x] オートヒーリング
 - [x] ConfigMap, Secret のデプロイ
 
-### Phase 2: k8s応用
+### Phase 2: k8s応用 ✅ 完了
+- [x] Ingress のデプロイ（L7ロードバランス）
+- [x] PV, PVC のデプロイ（永続化ストレージ）
 
-- [ ] **Step 7: Ingress のデプロイ（L7ロードバランス）**
-  - パスベースのルーティング（`/api` → API Pod、`/web` → Web Pod）
-  - ホストベースのルーティング
-  - マイクロサービスの疎結合を理解する重要なステップ
-
-- [ ] **Step 8: PV, PVC のデプロイ（永続化ストレージ）**
-  - PersistentVolume（PV）: 実際のストレージ
-  - PersistentVolumeClaim（PVC）: Podからのストレージ要求
-  - Podからのマウント
-
-### Phase 3: CI/CD
-
-- [ ] **Step 9: GitHub Actions でイメージビルド**
-  - mainにマージされたらdocker imageをビルド
-  - DockerHubにpush
-
-- [ ] **Step 10: ArgoCD でGitOps**
-  - ArgoCDがGitHubの変更を検知
-  - 自動でk8sクラスタを更新
-  - GitOpsの概念を理解
+### Phase 3: CI/CD ⬜ 次はここ
+- [ ] GitHub Actions でイメージビルド → DockerHub に push
+- [ ] ArgoCD でGitOps（自動デプロイ）
 
 ### Phase 4: モニタリング
-
-- [ ] **Step 11: Prometheus + Grafana**
-  - node-exporterでメトリクス収集
-  - Prometheusでデータ保存
-  - Grafanaで可視化
+- [ ] Prometheus + Grafana でメトリクス可視化
 
 ---
 
@@ -499,6 +779,107 @@ selector:
 - **minikube**: より本番に近い環境。学習目的ならこちらがおすすめ。
 
 今回はminikubeを使用。kubectlも別途インストールが必要だが、本番環境でも同じコマンドが使えるメリットがある。
+
+---
+
+### Q8: hashicorp/http-echo って何？
+
+**A:**
+HashiCorp（Terraformの会社）が作った超シンプルなテスト用Webサーバー。起動すると指定したテキストを返すだけ。
+
+```
+リクエスト → http-echo → "Hello from App V1!"
+```
+
+今回使う理由：
+- nginxだと両方同じ画面で区別しにくい
+- 自分でアプリ作らなくていい
+- どのPodに繋がったか一目でわかる
+
+---
+
+### Q9: `kubectl apply -f` の `-f` オプションは？
+
+**A:**
+`-f` は **file** の略。「このファイルを適用して」という意味。
+
+```bash
+kubectl apply -f app-v1.yaml     # ファイル指定
+kubectl apply -f ./manifests/    # ディレクトリ内の全YAML適用
+kubectl apply -f https://...     # URLからも可能
+```
+
+`-f` なしだと `error: must specify one of -f and -k` エラーになる。
+
+---
+
+### Q10: AWSでk8sに該当するサービスは？あえてk8sを使うメリットは？
+
+**A:**
+
+| k8sの機能 | AWSのマネージドサービス |
+|-----------|------------------------|
+| Ingress (L7振り分け) | ALB (Application Load Balancer) |
+| Service (L4振り分け) | NLB (Network Load Balancer) |
+| Deployment (コンテナ管理) | ECS (Elastic Container Service) |
+| Pod (コンテナ実行) | Fargate |
+| k8s全体 | EKS (Elastic Kubernetes Service) |
+
+**あえてk8sを使うメリット：**
+
+1. **ベンダーロックイン回避** - k8sのYAMLはAWS/GCP/Azure/オンプレどこでも動く
+2. **大規模での柔軟性** - ECSより複雑な構成を表現できる
+3. **エコシステム** - ArgoCD, Prometheus, Istio などk8s前提のツールが豊富
+
+**使い分けの目安：**
+| 状況 | おすすめ |
+|------|----------|
+| 小〜中規模、AWS固定 | ECS + Fargate（楽） |
+| マルチクラウド、大規模 | EKS (AWS上のk8s) |
+| オンプレ必須 | k8s一択 |
+| 学習目的 | k8s（どこでも通用する知識） |
+
+---
+
+### Q11: k8sを使ってる会社は多い？
+
+**A:**
+めちゃくちゃ多い。大手はほぼ使ってる。
+
+国内: Mercari, LINE, PayPay, SmartNews, Cookpad, Wantedly, サイバーエージェント, Yahoo など
+海外: Spotify, Airbnb, Pinterest, Twitter など
+
+「コンテナ使ってる大規模サービス ≒ k8s」くらいの勢い。
+
+---
+
+### Q12: 疎結合とは？なぜIngressで「疎結合」と言われる？
+
+**A:**
+フロントエンドで例えると「npmパッケージを分けてる」のサーバー版。
+
+```
+// 密結合（1つの巨大なコード）
+monolith-app/
+  └── src/
+      ├── users.js
+      ├── orders.js      ← 全部同じプロセスで動く
+      └── payments.js
+
+// 疎結合（分離されたサービス）
+user-service/      ← 独立してデプロイ可能
+order-service/     ← 独立してスケール可能
+payment-service/   ← 障害が起きても他に影響しない
+```
+
+Ingressを使うと：
+```
+https://myapp.com/api/users  → user-service
+https://myapp.com/api/orders → order-service  
+https://myapp.com/           → frontend-service
+```
+
+各サービスが独立してデプロイ・スケールできる。これが「疎結合」の実現。
 
 ---
 

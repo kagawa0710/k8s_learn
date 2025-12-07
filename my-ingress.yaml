@@ -1,0 +1,30 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: my-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+  - http:
+      paths:
+      - path: /v1
+        pathType: Prefix
+        backend:
+          service:
+            name: app-v1-service
+            port:
+              number: 80
+      - path: /v2
+        pathType: Prefix
+        backend:
+          service:
+            name: app-v2-service
+            port:
+              number: 80
+
+# これが何をするかというと：
+# 
+# http://xxxxx/v1  →  app-v1-service  →  "Hello from App V1!"
+# http://xxxxx/v2  →  app-v2-service  →  "Hello from App V2!"
